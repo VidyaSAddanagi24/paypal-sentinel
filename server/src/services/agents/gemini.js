@@ -3,29 +3,45 @@ import { GoogleGenAI } from '@google/genai'
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY })
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
+// Primary model first, then any fallbacks (comma-separated in GEMINI_FALLBACK_MODELS).
+const modelList = () =>
+    [process.env.GEMINI_MODEL, ...(process.env.GEMINI_FALLBACK_MODELS || '').split(',')]
+        .map((s) => (s || '').trim())
+        .filter(Boolean)
+
+const statusOf = (err) => Number(err?.status) || 0
+const isBusy = (err) =>
+    [429, 500, 503].includes(statusOf(err)) ||
+    /UNAVAILABLE|RESOURCE_EXHAUSTED|high demand|overloaded/i.test(String(err?.message))
+
 // Calls Gemini and returns parsed JSON validated by a zod schema.
-// Retries on rate limits (429) and on malformed or invalid output.
-export async function askJson({ system, prompt, schema, temperature = 0.7, attempts = 3 }) {
+// Busy or missing model -> wait and switch to the next model. Bad output -> retry the same model.
+export async function askJson({ system, prompt, schema, temperature = 0.7, attempts = 6 }) {
+    const models = modelList()
+    let m = 0
     let lastErr
     for (let i = 1; i <= attempts; i++) {
+        const model = models[m % models.length]
         try {
             const res = await ai.models.generateContent({
-                model: process.env.GEMINI_MODEL,
+                model,
                 contents: prompt,
-                config: {
-                    systemInstruction: system,
-                    temperature,
-                    responseMimeType: 'application/json',
-                },
+                config: { systemInstruction: system, temperature, responseMimeType: 'application/json' },
             })
-            const parsed = JSON.parse(res.text)
-            const result = schema.safeParse(parsed)
+            const result = schema.safeParse(JSON.parse(res.text))
             if (result.success) return result.data
-            lastErr = new Error('AI output failed validation: ' + result.error.issues[0]?.message)
+            lastErr = new Error('AI output failed validation: ' + (result.error.issues[0]?.message || 'unknown'))
+            console.error(`[gemini] ${model} attempt ${i}/${attempts}: ${lastErr.message}`)
         } catch (err) {
             lastErr = err
-            const rateLimited = err?.status === 429 || /429|RESOURCE_EXHAUSTED/i.test(String(err?.message))
-            if (rateLimited) await sleep(15000 * i) // back off, free tiers have low per-minute limits
+            console.error(`[gemini] ${model} attempt ${i}/${attempts}: ${statusOf(err) || ''} ${String(err?.message).slice(0, 120)}`)
+            const busy = isBusy(err)
+            if (busy || statusOf(err) === 404) m++ // try the next model, if there is one
+            if (busy && i < attempts) {
+                const wait = (statusOf(err) === 429 ? 15000 : 4000) * Math.min(i, 3)
+                console.error(`[gemini] waiting ${wait / 1000}s`)
+                await sleep(wait)
+            }
         }
     }
     throw new Error('Gemini call failed: ' + (lastErr?.message || 'unknown error'))
