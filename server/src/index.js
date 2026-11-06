@@ -4,6 +4,7 @@ import cors from 'cors'
 import helmet from 'helmet'
 import { connectDB } from './config/db.js'
 import authRoutes from './routes/auth.js'
+import negotiationRoutes from './routes/negotiations.js'
 
 if (!process.env.JWT_SECRET) {
     console.error('JWT_SECRET is missing in .env')
@@ -19,6 +20,7 @@ app.get('/api/health', (req, res) => {
     res.json({ status: 'ok', service: 'paypal-sentinel-server' })
 })
 app.use('/api/auth', authRoutes)
+app.use('/api/negotiations', negotiationRoutes)
 
 app.use((req, res) => res.status(404).json({ error: 'Not found' }))
 app.use((err, req, res, next) => {
