@@ -8,6 +8,7 @@ import Login from './pages/Login'
 import Register from './pages/Register'
 import Dashboard from './pages/Dashboard'
 import NewNegotiation from './pages/NewNegotiation'
+import NegotiationRoom from './pages/NegotiationRoom'
 
 export default function App() {
   return (
@@ -31,6 +32,14 @@ export default function App() {
               element={
                 <ProtectedRoute>
                   <NewNegotiation />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/negotiations/:id"
+              element={
+                <ProtectedRoute>
+                  <NegotiationRoom />
                 </ProtectedRoute>
               }
             />
