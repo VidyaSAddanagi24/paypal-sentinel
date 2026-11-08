@@ -108,13 +108,13 @@ export async function approveNegotiation(id) {
 }
 
 export async function createPayPalOrder(id) {
-    return request(`/api/negotiations/${id}/paypal/create-order`, {
+    return request(`/api/payments/${id}/order`, {
         method: 'POST',
     })
 }
 
 export async function capturePayPalOrder(id) {
-    return request(`/api/negotiations/${id}/paypal/capture-order`, {
+    return request(`/api/payments/${id}/capture`, {
         method: 'POST',
     })
 }
