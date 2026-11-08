@@ -1,17 +1,6 @@
-import 'dotenv/config'
 import { GoogleGenAI } from '@google/genai'
 
-let _ai = null
-function getAi() {
-    if (!_ai) {
-        if (!process.env.GEMINI_API_KEY) {
-            throw new Error('GEMINI_API_KEY is missing in .env')
-        }
-        _ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY })
-    }
-    return _ai
-}
-
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY })
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 // Primary model first, then any fallbacks (comma-separated in GEMINI_FALLBACK_MODELS).
@@ -21,25 +10,39 @@ const modelList = () =>
         .filter(Boolean)
 
 const statusOf = (err) => Number(err?.status) || 0
+
+// Overloaded, rate limited, timed out or network trouble: wait, then try the next model.
 const isBusy = (err) =>
-    [429, 500, 503].includes(statusOf(err)) ||
-    /UNAVAILABLE|RESOURCE_EXHAUSTED|high demand|overloaded/i.test(String(err?.message))
+    [429, 500, 503, 504].includes(statusOf(err)) ||
+    /UNAVAILABLE|RESOURCE_EXHAUSTED|high demand|overloaded|fetch failed|timed out|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN/i.test(
+        `${err?.message} ${err?.cause?.code ?? ''}`
+    )
+
+function withTimeout(promise, ms) {
+    let timer
+    const timeout = new Promise((_, reject) => {
+        timer = setTimeout(() => reject(Object.assign(new Error('Gemini request timed out'), { status: 504 })), ms)
+    })
+    return Promise.race([promise, timeout]).finally(() => clearTimeout(timer))
+}
 
 // Calls Gemini and returns parsed JSON validated by a zod schema.
-// Busy or missing model -> wait and switch to the next model. Bad output -> retry the same model.
-export async function askJson({ system, prompt, schema, temperature = 0.7, attempts = 6 }) {
-    const ai = getAi()
+// Busy, offline or missing model -> wait and switch to the next model. Bad output -> retry.
+export async function askJson({ system, prompt, schema, temperature = 0.7, attempts = 9 }) {
     const models = modelList()
     let m = 0
     let lastErr
     for (let i = 1; i <= attempts; i++) {
         const model = models[m % models.length]
         try {
-            const res = await ai.models.generateContent({
-                model,
-                contents: prompt,
-                config: { systemInstruction: system, temperature, responseMimeType: 'application/json' },
-            })
+            const res = await withTimeout(
+                ai.models.generateContent({
+                    model,
+                    contents: prompt,
+                    config: { systemInstruction: system, temperature, responseMimeType: 'application/json' },
+                }),
+                90000
+            )
             const result = schema.safeParse(JSON.parse(res.text))
             if (result.success) return result.data
             lastErr = new Error('AI output failed validation: ' + (result.error.issues[0]?.message || 'unknown'))

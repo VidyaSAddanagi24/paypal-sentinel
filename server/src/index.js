@@ -4,6 +4,7 @@ import cors from 'cors'
 import helmet from 'helmet'
 import { connectDB } from './config/db.js'
 import Negotiation from './models/Negotiation.js'
+import { logEvent } from './services/audit.js'
 import authRoutes from './routes/auth.js'
 import negotiationRoutes from './routes/negotiations.js'
 import paymentRoutes from './routes/payments.js'
@@ -31,15 +32,24 @@ app.use((err, req, res, next) => {
     res.status(err.status || 500).json({ error: err.status ? err.message : 'Internal server error' })
 })
 
+// A negotiation still marked NEGOTIATING at startup was killed by a restart. Mark it, with a reason.
+async function recoverInterrupted() {
+    const stuck = await Negotiation.find({ status: 'NEGOTIATING' })
+    for (const n of stuck) {
+        await Negotiation.updateOne({ _id: n._id }, { status: 'NEGOTIATION_FAILED' })
+        await logEvent({
+            negotiationId: n._id, userId: n.userId, type: 'NEGOTIATION_INTERRUPTED',
+            details: { reason: 'The server restarted during the negotiation' },
+        })
+    }
+    if (stuck.length) console.log(`Marked ${stuck.length} interrupted negotiation(s) as failed`)
+}
+
 const port = process.env.PORT || 5000
 connectDB()
-    .then(async () => {
-        // A restart kills any in-flight background negotiation, so close those out instead of leaving them stuck.
-        const r = await Negotiation.updateMany({ status: 'NEGOTIATING' }, { status: 'NEGOTIATION_FAILED' })
-        if (r.modifiedCount) console.log(`Marked ${r.modifiedCount} interrupted negotiation(s) as failed`)
-        app.listen(port, () => console.log(`Server running on port ${port}`))
-    })
+    .then(recoverInterrupted)
+    .then(() => app.listen(port, () => console.log(`Server running on port ${port}`)))
     .catch((err) => {
-        console.error('DB connection failed:', err.message)
+        console.error('Startup failed:', err.message)
         process.exit(1)
     })
