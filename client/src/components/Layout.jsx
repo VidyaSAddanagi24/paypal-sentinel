@@ -44,6 +44,15 @@ export default function Layout() {
                 >
                   Dashboard
                 </Link>
+                <Link
+                  to="/negotiations/new"
+                  className="min-h-[44px] px-3.5 py-2.5 rounded-xl text-sm font-semibold text-[#6EE0BE] hover:text-white hover:bg-white/10 transition-colors flex items-center gap-1.5"
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+                  </svg>
+                  <span>New Negotiation</span>
+                </Link>
                 <div className="hidden sm:flex items-center gap-2 pl-2 border-l border-white/10">
                   <span className="text-xs text-white/70">
                     Signed in as <strong className="text-white font-medium">{user.name}</strong>

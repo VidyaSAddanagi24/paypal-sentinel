@@ -7,6 +7,7 @@ import Landing from './pages/Landing'
 import Login from './pages/Login'
 import Register from './pages/Register'
 import Dashboard from './pages/Dashboard'
+import NewNegotiation from './pages/NewNegotiation'
 
 export default function App() {
   return (
@@ -22,6 +23,14 @@ export default function App() {
               element={
                 <ProtectedRoute>
                   <Dashboard />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/negotiations/new"
+              element={
+                <ProtectedRoute>
+                  <NewNegotiation />
                 </ProtectedRoute>
               }
             />
