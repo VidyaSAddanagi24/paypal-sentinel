@@ -1,6 +1,17 @@
+import 'dotenv/config'
 import { GoogleGenAI } from '@google/genai'
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY })
+let _ai = null
+function getAi() {
+    if (!_ai) {
+        if (!process.env.GEMINI_API_KEY) {
+            throw new Error('GEMINI_API_KEY is missing in .env')
+        }
+        _ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY })
+    }
+    return _ai
+}
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 // Primary model first, then any fallbacks (comma-separated in GEMINI_FALLBACK_MODELS).
@@ -17,6 +28,7 @@ const isBusy = (err) =>
 // Calls Gemini and returns parsed JSON validated by a zod schema.
 // Busy or missing model -> wait and switch to the next model. Bad output -> retry the same model.
 export async function askJson({ system, prompt, schema, temperature = 0.7, attempts = 6 }) {
+    const ai = getAi()
     const models = modelList()
     let m = 0
     let lastErr
