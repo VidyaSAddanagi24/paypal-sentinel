@@ -1,151 +1,91 @@
-import 'dotenv/config'
+// PayPal Orders v2 client. There is no fallback: if PayPal fails, this throws.
+const base = () => process.env.PAYPAL_BASE_URL || 'https://api-m.sandbox.paypal.com'
 
-let cachedToken = null
-let tokenExpiresAt = 0
+export class PayPalError extends Error {
+    constructor(message, status, details) {
+        super(message)
+        this.name = 'PayPalError'
+        this.status = status
+        this.details = details
+    }
+}
+
+let cached = { token: null, expiresAt: 0 }
 
 async function getAccessToken() {
-    const { PAYPAL_CLIENT_ID, PAYPAL_CLIENT_SECRET, PAYPAL_BASE_URL } = process.env
-    if (!PAYPAL_CLIENT_ID || !PAYPAL_CLIENT_SECRET) {
-        throw new Error('PayPal credentials missing in environment')
-    }
-
-    if (cachedToken && Date.now() < tokenExpiresAt - 60000) {
-        return cachedToken
-    }
-
-    const auth = Buffer.from(`${PAYPAL_CLIENT_ID}:${PAYPAL_CLIENT_SECRET}`).toString('base64')
-    const res = await fetch(`${PAYPAL_BASE_URL || 'https://api-m.sandbox.paypal.com'}/v1/oauth2/token`, {
+    if (cached.token && Date.now() < cached.expiresAt - 60000) return cached.token
+    const id = process.env.PAYPAL_CLIENT_ID
+    const secret = process.env.PAYPAL_CLIENT_SECRET
+    if (!id || !secret) throw new PayPalError('PayPal credentials are not configured', 500)
+    const res = await fetch(`${base()}/v1/oauth2/token`, {
         method: 'POST',
         headers: {
-            Authorization: `Basic ${auth}`,
+            Authorization: 'Basic ' + Buffer.from(`${id}:${secret}`).toString('base64'),
             'Content-Type': 'application/x-www-form-urlencoded',
         },
         body: 'grant_type=client_credentials',
     })
-
-    if (!res.ok) {
-        const errorText = await res.text()
-        throw new Error(`PayPal auth failed (${res.status}): ${errorText}`)
-    }
-
-    const data = await res.json()
-    cachedToken = data.access_token
-    tokenExpiresAt = Date.now() + (data.expires_in || 3600) * 1000
-    return cachedToken
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) throw new PayPalError('PayPal authentication failed', res.status, data)
+    cached = { token: data.access_token, expiresAt: Date.now() + data.expires_in * 1000 }
+    return cached.token
 }
 
-export async function createPayPalOrder({ amount, currency = 'USD', description = 'PayPal Sentinel Autonomous Purchase', referenceId }) {
-    const baseUrl = process.env.PAYPAL_BASE_URL || 'https://api-m.sandbox.paypal.com'
-    
-    // Fallback safely if simulated/network unavailable
-    try {
-        const token = await getAccessToken()
-        // Map non-standard PayPal currencies to USD for sandbox testing if needed
-        const validCurrencies = ['USD', 'EUR', 'GBP', 'CAD', 'AUD', 'JPY']
-        const finalCurrency = validCurrencies.includes(currency?.toUpperCase()) ? currency.toUpperCase() : 'USD'
-        
-        const payload = {
+async function request(path, { method = 'GET', body, requestId } = {}) {
+    const token = await getAccessToken()
+    const res = await fetch(base() + path, {
+        method,
+        headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+            ...(requestId ? { 'PayPal-Request-Id': requestId } : {}),
+        },
+        body: body ? JSON.stringify(body) : undefined,
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) {
+        throw new PayPalError(data?.details?.[0]?.issue || data?.message || 'PayPal request failed', res.status, data)
+    }
+    return data
+}
+
+const toValue = (n) => (Math.round(Number(n) * 100) / 100).toFixed(2)
+
+// Builds the order from the buyer-approved terms only. Currency and amount are never altered.
+export async function createPayPalOrder({ agreementId, terms, returnUrl, cancelUrl, requestId }) {
+    const order = await request('/v2/checkout/orders', {
+        method: 'POST',
+        requestId,
+        body: {
             intent: 'CAPTURE',
-            purchase_units: [
-                {
-                    reference_id: String(referenceId || Date.now()),
-                    description: description.slice(0, 127),
-                    amount: {
-                        currency_code: finalCurrency,
-                        value: Number(amount).toFixed(2),
+            purchase_units: [{
+                reference_id: terms.sellerId,
+                custom_id: String(agreementId),
+                description: `${terms.quantity} x ${terms.product} from ${terms.sellerName}`.slice(0, 127),
+                amount: { currency_code: terms.currency, value: toValue(terms.amount) },
+            }],
+            payment_source: {
+                paypal: {
+                    experience_context: {
+                        user_action: 'PAY_NOW',
+                        shipping_preference: 'NO_SHIPPING',
+                        return_url: returnUrl,
+                        cancel_url: cancelUrl,
                     },
                 },
-            ],
-            application_context: {
-                brand_name: 'PayPal Sentinel Security Guard',
-                user_action: 'PAY_NOW',
-                shipping_preference: 'NO_SHIPPING',
             },
-        }
-
-        const res = await fetch(`${baseUrl}/v2/checkout/orders`, {
-            method: 'POST',
-            headers: {
-                Authorization: `Bearer ${token}`,
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(payload),
-        })
-
-        if (!res.ok) {
-            const err = await res.text()
-            throw new Error(`PayPal Create Order Error (${res.status}): ${err}`)
-        }
-
-        const order = await res.json()
-        const approveLink = order.links?.find((l) => l.rel === 'approve')?.href || null
-
-        return {
-            id: order.id,
-            status: order.status,
-            approveLink,
-            currency: finalCurrency,
-            amount: Number(amount).toFixed(2),
-            simulated: false,
-        }
-    } catch (err) {
-        console.warn('PayPal live API unavailable, using verified sandbox simulation mode:', err.message)
-        // Deterministic simulation order ID for offline/sandbox testing environments
-        const mockOrderId = `MOCK-ORDER-${Date.now().toString(36).toUpperCase()}`
-        return {
-            id: mockOrderId,
-            status: 'CREATED',
-            approveLink: `https://www.sandbox.paypal.com/checkoutnow?token=${mockOrderId}`,
-            currency: currency || 'USD',
-            amount: Number(amount).toFixed(2),
-            simulated: true,
-            notice: 'Created in Sandbox Simulation Mode (Network/Credentials fallback)',
-        }
-    }
+        },
+    })
+    const link = order.links?.find((l) => l.rel === 'payer-action') || order.links?.find((l) => l.rel === 'approve')
+    return { id: order.id, status: order.status, approveUrl: link?.href || null }
 }
 
-export async function capturePayPalOrder(orderId) {
-    const baseUrl = process.env.PAYPAL_BASE_URL || 'https://api-m.sandbox.paypal.com'
-    
-    if (orderId && orderId.startsWith('MOCK-ORDER-')) {
-        return {
-            id: `MOCK-CAPTURE-${Date.now().toString(36).toUpperCase()}`,
-            status: 'COMPLETED',
-            orderId,
-            simulated: true,
-        }
-    }
-
-    try {
-        const token = await getAccessToken()
-        const res = await fetch(`${baseUrl}/v2/checkout/orders/${orderId}/capture`, {
-            method: 'POST',
-            headers: {
-                Authorization: `Bearer ${token}`,
-                'Content-Type': 'application/json',
-            },
-        })
-
-        if (!res.ok) {
-            const err = await res.text()
-            throw new Error(`PayPal Capture Error (${res.status}): ${err}`)
-        }
-
-        const captureData = await res.json()
-        return {
-            id: captureData.id || captureData.purchase_units?.[0]?.payments?.captures?.[0]?.id || `CAP-${Date.now()}`,
-            status: captureData.status || 'COMPLETED',
-            details: captureData,
-            simulated: false,
-        }
-    } catch (err) {
-        console.warn('PayPal live capture unavailable, using verified simulation mode:', err.message)
-        return {
-            id: `MOCK-CAPTURE-${Date.now().toString(36).toUpperCase()}`,
-            status: 'COMPLETED',
-            orderId,
-            simulated: true,
-        }
-    }
+export async function getPayPalOrder(orderId) {
+    return request(`/v2/checkout/orders/${encodeURIComponent(orderId)}`)
 }
 
+export async function capturePayPalOrder(orderId, requestId) {
+    const data = await request(`/v2/checkout/orders/${encodeURIComponent(orderId)}/capture`, { method: 'POST', requestId })
+    const capture = data.purchase_units?.[0]?.payments?.captures?.[0]
+    return { id: data.id, status: data.status, captureId: capture?.id || null, captureStatus: capture?.status || null }
+}
