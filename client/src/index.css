@@ -1,1 +1,23 @@
 @import "tailwindcss";
+
+@theme {
+  --font-sans: "Hanken Grotesk", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+
+  --color-hero: #0D1F1A;
+  --color-mint: #6EE0BE;
+  --color-brand: #0B6B57;
+  --color-page: #F4F5F1;
+  --color-ink: #12171F;
+}
+
+:root {
+  font-family: "Hanken Grotesk", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  color: #12171F;
+  background-color: #F4F5F1;
+}
+
+.font-num {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+}
