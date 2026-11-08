@@ -12,9 +12,9 @@ import { rulesSchema } from '../services/agents/schemas.js'
 import { parseInstructions } from '../services/agents/buyerAgent.js'
 import { runNegotiation, defaultSellerProfile } from '../services/agents/negotiator.js'
 import { evaluateAgreement } from '../services/policyEngine.js'
-import { pickTerms, hashTerms } from '../services/snapshot.js'
+import { pickTerms } from '../services/snapshot.js'
+import { approveAgreement } from '../services/approval.js'
 import { logEvent } from '../services/audit.js'
-import { createPayPalOrder, capturePayPalOrder } from '../services/paypal.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -49,7 +49,8 @@ router.post('/parse', validate(parseSchema), async (req, res, next) => {
     try {
         const draft = await parseInstructions(req.body.instructions)
         res.json({ draft })
-    } catch {
+    } catch (err) {
+        console.error('parse failed:', err.message)
         next(Object.assign(new Error('The AI service is busy. Please try again in a moment.'), { status: 503 }))
     }
 })
@@ -84,7 +85,7 @@ router.get('/', async (req, res, next) => {
     }
 })
 
-// 3b. List user's global audit trail.
+// 3b. My audit trail across all negotiations. Must stay above '/:id'.
 router.get('/audit/all', async (req, res, next) => {
     try {
         const events = await AuditEvent.find({ userId: req.user._id }).sort({ createdAt: -1 }).limit(100)
@@ -94,7 +95,7 @@ router.get('/audit/all', async (req, res, next) => {
     }
 })
 
-// 4. One negotiation with its transcript, agreement, audit events, and authorization. The frontend polls this.
+// 4. One negotiation with transcript, agreement, audit events and authorization. The frontend polls this.
 router.get('/:id', loadOwned, async (req, res, next) => {
     try {
         const n = req.negotiation
@@ -128,220 +129,40 @@ router.post('/:id/run', loadOwned, async (req, res, next) => {
     }
 })
 
-// 6. Approve the agreement. The human signs off, creating an immutable cryptographic snapshot and authorization token.
+// 6. Buyer explicitly approves the exact agreement. Freezes the snapshot and issues the authorization.
 router.post('/:id/approve', loadOwned, async (req, res, next) => {
     try {
-        const n = req.negotiation
-        if (n.status !== 'AWAITING_APPROVAL') {
-            return res.status(400).json({ error: `Cannot approve negotiation with status '${n.status}'. Expected 'AWAITING_APPROVAL'.` })
-        }
-        const agreement = await Agreement.findOne({ _id: n.agreementId, userId: req.user._id })
-        if (!agreement) {
-            return res.status(404).json({ error: 'Agreement not found' })
-        }
-        if (!agreement.validation?.allowed) {
-            return res.status(400).json({ error: 'Cannot approve an agreement that failed policy compliance checks' })
-        }
-
-        const canonicalTerms = pickTerms(agreement.terms)
-        const hash = hashTerms(canonicalTerms)
-        const now = new Date()
-
-        // Seal snapshot into agreement
-        agreement.snapshot = {
-            terms: canonicalTerms,
-            hash,
-            approvedAt: now,
-        }
-        agreement.status = 'APPROVED'
-        await agreement.save()
-
-        // Create time-bounded cryptographic authorization (15 minutes)
-        const authorization = await Authorization.create({
-            agreementId: agreement._id,
-            userId: req.user._id,
-            snapshotHash: hash,
-            expiresAt: new Date(Date.now() + 15 * 60 * 1000),
-            status: 'ACTIVE',
-        })
-
-        await Negotiation.updateOne({ _id: n._id }, { status: 'APPROVED' })
-        n.status = 'APPROVED'
-
-        await logEvent({
-            negotiationId: n._id,
-            userId: req.user._id,
-            type: 'AGREEMENT_APPROVED',
-            details: {
-                terms: canonicalTerms,
-                snapshotHash: hash,
-                authorizationId: authorization._id,
-                expiresAt: authorization.expiresAt,
-            },
-        })
-
-        res.json({
-            negotiation: publicNegotiation(n),
-            agreement,
-            authorization,
-        })
+        const r = await approveAgreement(req.negotiation, req.user._id)
+        if (!r.ok) return res.status(r.status).json({ error: r.error, reasons: r.reasons })
+        res.json({ approved: true, snapshotHash: r.snapshotHash, expiresAt: r.expiresAt, terms: r.terms })
     } catch (err) {
         next(err)
     }
 })
 
-// 7. Create PayPal Order guarded by cryptographic term-drift validation.
-router.post('/:id/paypal/create-order', loadOwned, async (req, res, next) => {
-    try {
-        const n = req.negotiation
-        if (!['APPROVED', 'PAYPAL_ORDER_CREATED'].includes(n.status)) {
-            return res.status(400).json({ error: `Invalid status '${n.status}' for PayPal checkout` })
-        }
-        const agreement = await Agreement.findOne({ _id: n.agreementId, userId: req.user._id })
-        if (!agreement) return res.status(404).json({ error: 'Agreement not found' })
-
-        const auth = await Authorization.findOne({ agreementId: agreement._id, userId: req.user._id, status: 'ACTIVE' }).sort({ createdAt: -1 })
-        if (!auth) {
-            return res.status(403).json({ error: 'No active authorization found. Please approve the agreement first.' })
-        }
-        if (new Date() > new Date(auth.expiresAt)) {
-            auth.status = 'EXPIRED'
-            await auth.save()
-            await Negotiation.updateOne({ _id: n._id }, { status: 'EXPIRED' })
-            await logEvent({ negotiationId: n._id, userId: req.user._id, type: 'AUTHORIZATION_EXPIRED', details: { authorizationId: auth._id } })
-            return res.status(403).json({ error: 'Authorization token has expired. Re-approval required.' })
-        }
-
-        // CRITICAL SECURITY CHECK: Sentinel Drift Gate
-        const currentTerms = pickTerms(agreement.terms)
-        const currentHash = hashTerms(currentTerms)
-        if (currentHash !== auth.snapshotHash) {
-            await Negotiation.updateOne({ _id: n._id }, { status: 'BLOCKED_DRIFT' })
-            await logEvent({
-                negotiationId: n._id,
-                userId: req.user._id,
-                type: 'BLOCKED_DRIFT',
-                details: {
-                    expectedHash: auth.snapshotHash,
-                    actualHash: currentHash,
-                    currentTerms,
-                },
-            })
-            return res.status(403).json({
-                error: 'SENTINEL_BLOCKED_DRIFT: Terms have drifted or been tampered with after human authorization! PayPal payment aborted.',
-            })
-        }
-
-        const order = await createPayPalOrder({
-            amount: agreement.terms.amount,
-            currency: agreement.terms.currency || 'USD',
-            description: `PayPal Sentinel: ${agreement.terms.quantity}x ${agreement.terms.product}`,
-            referenceId: n._id.toString(),
-        })
-
-        auth.paypalOrderId = order.id
-        await auth.save()
-
-        await Negotiation.updateOne({ _id: n._id }, { status: 'PAYPAL_ORDER_CREATED' })
-        n.status = 'PAYPAL_ORDER_CREATED'
-
-        await logEvent({
-            negotiationId: n._id,
-            userId: req.user._id,
-            type: 'PAYPAL_ORDER_CREATED',
-            details: {
-                orderId: order.id,
-                amount: order.amount,
-                currency: order.currency,
-                simulated: order.simulated,
-            },
-        })
-
-        res.json({ order, authorization: auth, negotiation: publicNegotiation(n) })
-    } catch (err) {
-        next(err)
-    }
-})
-
-// 8. Capture PayPal payment and consume authorization.
-router.post('/:id/paypal/capture-order', loadOwned, async (req, res, next) => {
-    try {
-        const n = req.negotiation
-        const agreement = await Agreement.findOne({ _id: n.agreementId, userId: req.user._id })
-        if (!agreement) return res.status(404).json({ error: 'Agreement not found' })
-
-        const auth = await Authorization.findOne({ agreementId: agreement._id, userId: req.user._id, status: 'ACTIVE' }).sort({ createdAt: -1 })
-        if (!auth || !auth.paypalOrderId) {
-            return res.status(400).json({ error: 'No active PayPal order ready for capture.' })
-        }
-
-        // Final drift verification
-        const currentTerms = pickTerms(agreement.terms)
-        const currentHash = hashTerms(currentTerms)
-        if (currentHash !== auth.snapshotHash) {
-            await Negotiation.updateOne({ _id: n._id }, { status: 'BLOCKED_DRIFT' })
-            await logEvent({
-                negotiationId: n._id,
-                userId: req.user._id,
-                type: 'BLOCKED_DRIFT',
-                details: { expectedHash: auth.snapshotHash, actualHash: currentHash },
-            })
-            return res.status(403).json({ error: 'SENTINEL_BLOCKED_DRIFT: Drift detected before capture.' })
-        }
-
-        const capture = await capturePayPalOrder(auth.paypalOrderId)
-
-        auth.status = 'CONSUMED'
-        auth.consumedAt = new Date()
-        await auth.save()
-
-        await Negotiation.updateOne({ _id: n._id }, { status: 'CAPTURED' })
-        n.status = 'CAPTURED'
-
-        await logEvent({
-            negotiationId: n._id,
-            userId: req.user._id,
-            type: 'PAYPAL_CAPTURED',
-            details: {
-                captureId: capture.id,
-                status: capture.status,
-                orderId: auth.paypalOrderId,
-                simulated: capture.simulated,
-            },
-        })
-
-        res.json({ capture, negotiation: publicNegotiation(n), authorization: auth })
-    } catch (err) {
-        next(err)
-    }
-})
-
-// 9. Demo security defense: intentionally tamper with agreed terms to prove Sentinel catches drift.
+// 7. DEMO TOOL, off unless ENABLE_DEMO_TOOLS=true. Changes the agreed price AFTER approval,
+//    to show the Integrity Shield blocking the payment.
 router.post('/:id/simulate-drift', loadOwned, async (req, res, next) => {
     try {
+        if (process.env.ENABLE_DEMO_TOOLS !== 'true') return res.status(404).json({ error: 'Not found' })
         const n = req.negotiation
+        if (!['APPROVED', 'PAYPAL_ORDER_CREATED'].includes(n.status) || !n.agreementId) {
+            return res.status(409).json({ error: 'Tampering can only be demonstrated on an approved, unpaid deal' })
+        }
         const agreement = await Agreement.findOne({ _id: n.agreementId, userId: req.user._id })
-        if (!agreement) return res.status(404).json({ error: 'Agreement not found' })
+        if (!agreement) return res.status(404).json({ error: 'Not found' })
 
-        // Artificially inflate the price by 15% as an unauthorized seller drift / injection attack
         const originalAmount = agreement.terms.amount
-        agreement.terms.amount = Math.round(originalAmount * 1.15)
-        await agreement.save()
-
+        const tamperedAmount = Math.round(originalAmount * 1.15)
+        await Agreement.updateOne({ _id: agreement._id }, { $set: { 'terms.amount': tamperedAmount } })
         await logEvent({
-            negotiationId: n._id,
-            userId: req.user._id,
-            type: 'DRIFT_INJECTION_SIMULATED',
-            details: {
-                originalAmount,
-                tamperedAmount: agreement.terms.amount,
-                note: 'Tampered price outside authorization to test Sentinel SHA-256 detection',
-            },
+            negotiationId: n._id, userId: req.user._id, type: 'DEMO_TAMPER_APPLIED',
+            details: { originalAmount, tamperedAmount },
         })
-
         res.json({
-            message: `Drift injected: price altered from ${originalAmount} to ${agreement.terms.amount}. Initiating PayPal checkout will now trigger Sentinel drift blocking.`,
-            agreement,
+            message: `Demo tamper applied: amount changed from ${originalAmount} to ${tamperedAmount}. The next payment step will be blocked.`,
+            originalAmount,
+            tamperedAmount,
         })
     } catch (err) {
         next(err)
@@ -367,6 +188,7 @@ async function execute(n) {
         })
 
         if (result.status !== 'AGREED') {
+            console.log('negotiation ended:', result.reason)
             await Negotiation.updateOne({ _id: n._id }, { status: 'NEGOTIATION_FAILED', roundsUsed: result.roundsUsed })
             await logEvent({ ...base, type: 'NEGOTIATION_FAILED', details: { reason: result.reason } })
             return
@@ -390,6 +212,7 @@ async function execute(n) {
             details: { terms, reasons: verdict.reasons, checks: verdict.checks },
         })
     } catch (err) {
+        console.error('negotiation error:', err.message)
         await Negotiation.updateOne({ _id: n._id }, { status: 'NEGOTIATION_FAILED' })
         await logEvent({ ...base, type: 'NEGOTIATION_ERROR', details: { message: String(err.message).slice(0, 300) } })
     }
