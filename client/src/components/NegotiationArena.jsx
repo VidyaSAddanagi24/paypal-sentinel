@@ -79,9 +79,9 @@ export default function NegotiationArena({ negotiationId, onBack }) {
         try {
             const res = await createPayPalOrder(negotiationId)
             await fetchDetails()
-            if (res.order?.approveLink && !res.order.simulated) {
-                // Real PayPal sandbox link
-                window.open(res.order.approveLink, '_blank')
+            const url = res.approveUrl || res.order?.approveLink
+            if (url) {
+                window.open(url, '_blank')
             }
         } catch (err) {
             setError(err.message)
