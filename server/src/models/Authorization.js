@@ -8,6 +8,7 @@ const authorizationSchema = new mongoose.Schema(
         expiresAt: { type: Date, required: true },
         consumedAt: { type: Date, default: null },
         paypalOrderId: { type: String, default: null },
+        paypalCaptureId: { type: String, default: null },
         status: { type: String, enum: ['ACTIVE', 'CONSUMED', 'EXPIRED', 'REVOKED'], default: 'ACTIVE' },
     },
     { timestamps: true }
