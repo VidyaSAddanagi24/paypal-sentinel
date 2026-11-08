@@ -9,6 +9,8 @@ import Register from './pages/Register'
 import Dashboard from './pages/Dashboard'
 import NewNegotiation from './pages/NewNegotiation'
 import NegotiationRoom from './pages/NegotiationRoom'
+import Approval from './pages/Approval'
+import Checkout from './pages/Checkout'
 
 export default function App() {
   return (
@@ -40,6 +42,22 @@ export default function App() {
               element={
                 <ProtectedRoute>
                   <NegotiationRoom />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/negotiations/:id/approve"
+              element={
+                <ProtectedRoute>
+                  <Approval />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/negotiations/:id/checkout"
+              element={
+                <ProtectedRoute>
+                  <Checkout />
                 </ProtectedRoute>
               }
             />

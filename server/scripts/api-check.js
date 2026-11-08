@@ -21,7 +21,7 @@ const token = r.data.token
 if (!token) { console.log('Auth failed:', r.status, r.data); process.exit(1) }
 
 const instructions = 'I want to purchase 10 laptops. Budget Rs 4,00,000. Delivery within 7 days.'
-const rules = { product: 'laptop', quantity: 10, maxBudget: 400000, currency: 'INR', maxDeliveryDays: 7, requiresApproval: true }
+const rules = { product: 'laptop', quantity: 10, maxBudget: 4800, currency: 'USD', maxDeliveryDays: 7, requiresApproval: true }
 
 r = await call('POST', '/negotiations', { instructions, rules }, token)
 const id = r.data.negotiation?._id

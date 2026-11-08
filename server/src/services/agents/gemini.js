@@ -53,7 +53,7 @@ export async function askJson({ system, prompt, schema, temperature = 0.7, attem
             const busy = isBusy(err)
             if (busy || statusOf(err) === 404) m++ // try the next model, if there is one
             if (busy && i < attempts) {
-                const wait = (statusOf(err) === 429 ? 15000 : 4000) * Math.min(i, 3)
+                const wait = (statusOf(err) === 429 ? 15000 : 2000) * Math.min(i, 3)
                 console.error(`[gemini] waiting ${wait / 1000}s`)
                 await sleep(wait)
             }
