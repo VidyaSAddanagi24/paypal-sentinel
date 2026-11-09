@@ -11,6 +11,8 @@ import NewNegotiation from './pages/NewNegotiation'
 import NegotiationRoom from './pages/NegotiationRoom'
 import Approval from './pages/Approval'
 import Checkout from './pages/Checkout'
+import AuditTrail from './pages/AuditTrail'
+import NegotiationAudit from './pages/NegotiationAudit'
 
 export default function App() {
   return (
@@ -58,6 +60,22 @@ export default function App() {
               element={
                 <ProtectedRoute>
                   <Checkout />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/audit"
+              element={
+                <ProtectedRoute>
+                  <AuditTrail />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/negotiations/:id/audit"
+              element={
+                <ProtectedRoute>
+                  <NegotiationAudit />
                 </ProtectedRoute>
               }
             />

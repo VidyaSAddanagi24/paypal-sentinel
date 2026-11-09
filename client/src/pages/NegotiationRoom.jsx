@@ -229,6 +229,16 @@ export default function NegotiationRoom() {
                 <span className="w-1.5 h-1.5 rounded-full bg-slate-400" />
                 Simulated seller
               </span>
+              <span>&bull;</span>
+              <Link
+                to={`/negotiations/${id}/audit`}
+                className="inline-flex items-center gap-1 text-xs font-semibold text-[#0B6B57] hover:underline min-h-[36px]"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+                </svg>
+                View audit trail
+              </Link>
             </div>
           </div>
         </div>

@@ -45,6 +45,12 @@ export default function Layout() {
                   Dashboard
                 </Link>
                 <Link
+                  to="/audit"
+                  className="min-h-[44px] px-3.5 py-2.5 rounded-xl text-sm font-semibold text-white/90 hover:text-white hover:bg-white/10 transition-colors flex items-center"
+                >
+                  Audit Trail
+                </Link>
+                <Link
                   to="/negotiations/new"
                   className="min-h-[44px] px-3.5 py-2.5 rounded-xl text-sm font-semibold text-[#6EE0BE] hover:text-white hover:bg-white/10 transition-colors flex items-center gap-1.5"
                 >
