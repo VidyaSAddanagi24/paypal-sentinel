@@ -92,6 +92,90 @@ export default function Checkout() {
   const agreement = data?.agreement
   const authorization = data?.authorization
   const status = negotiation?.status
+  const events = data?.events ?? []
+
+  // ── BLOCKED_DRIFT: show Integrity Shield block panel ─────────────────────────
+  if (status === 'BLOCKED_DRIFT') {
+    // Most recent DRIFT_BLOCKED event (events are sorted ascending; find last match)
+    const driftEvent = [...events].reverse().find((e) => e.type === 'DRIFT_BLOCKED')
+    const reasons = Array.isArray(driftEvent?.details?.reasons) ? driftEvent.details.reasons : []
+    const approvedTerms = agreement?.snapshot?.terms ?? {}
+    const approvedAmount = approvedTerms.amount != null
+      ? formatMoney(approvedTerms.amount, approvedTerms.currency)
+      : null
+    const attemptedAmount = driftEvent?.details?.attemptedAmount != null
+      ? formatMoney(driftEvent.details.attemptedAmount, approvedTerms.currency)
+      : null
+
+    return (
+      <div className="max-w-2xl mx-auto px-4 sm:px-6 py-10 space-y-6">
+        <BackLink id={id} />
+
+        <div className="p-6 rounded-3xl bg-red-50 border border-red-400 space-y-4">
+          <div className="flex items-center gap-2">
+            <svg className="w-6 h-6 text-red-600 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+            </svg>
+            <h2 className="text-lg font-bold text-red-900">Payment blocked by Integrity Shield</h2>
+          </div>
+
+          <p className="text-sm text-red-800 leading-relaxed">
+            The approved terms no longer match the transaction, so no payment was made and a fresh
+            approval is required.
+          </p>
+
+          {(approvedAmount || attemptedAmount) && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {approvedAmount && (
+                <div className="p-3 rounded-xl bg-white border border-red-200">
+                  <span className="text-[11px] text-red-700 block font-semibold uppercase tracking-wider">Approved Amount</span>
+                  <span className="text-sm font-bold text-red-900">{approvedAmount}</span>
+                </div>
+              )}
+              {attemptedAmount && (
+                <div className="p-3 rounded-xl bg-white border border-red-200">
+                  <span className="text-[11px] text-red-700 block font-semibold uppercase tracking-wider">Attempted Amount</span>
+                  <span className="text-sm font-bold text-red-900">{attemptedAmount}</span>
+                </div>
+              )}
+            </div>
+          )}
+
+          {reasons.length > 0 && (
+            <div className="space-y-1.5">
+              <p className="text-xs font-bold text-red-800 uppercase tracking-wider">Reasons</p>
+              <ul className="space-y-1.5">
+                {reasons.map((r, i) => (
+                  <li key={i} className="flex items-start gap-2 text-sm text-red-800">
+                    <span className="text-red-500 font-bold shrink-0 mt-0.5" aria-hidden="true">✗</span>
+                    <span>{String(r)}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          <div className="flex flex-wrap items-center gap-4 pt-1">
+            <Link
+              to={`/negotiations/${id}`}
+              className="inline-flex items-center gap-1.5 text-sm font-semibold text-red-700 hover:underline"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
+              </svg>
+              Back to Negotiation Room
+            </Link>
+            <Link
+              to={`/negotiations/${id}/audit`}
+              className="inline-flex items-center gap-1.5 text-sm font-semibold text-red-700 hover:underline"
+            >
+              View audit trail
+            </Link>
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   // ── Must be APPROVED or PAYPAL_ORDER_CREATED (or CAPTURED to show receipt) ──
   const allowedStatuses = ['APPROVED', 'PAYPAL_ORDER_CREATED', 'CAPTURED']
